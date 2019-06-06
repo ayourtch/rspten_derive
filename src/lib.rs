@@ -108,6 +108,7 @@ fn get_field_attr<'a>(name: &str, v: &'a Vec<syn::Attribute>) -> Option<&'a syn:
 
 enum FieldFlavour {
     Vector,
+    Option,
     Check,
     Button,
     Select,
@@ -127,6 +128,8 @@ struct FieldInfo {
 fn get_field_flavour(fi: &FieldInfo) -> FieldFlavour {
     if fi.field_type == "Vec" {
         return FieldFlavour::Vector;
+    } else if fi.field_type == "Option" {
+        return FieldFlavour::Option;
     } else if fi.field_name.starts_with("cb") {
         return FieldFlavour::Check;
     } else if fi.field_name.starts_with("txt") {
@@ -150,6 +153,7 @@ fn gen_html_inputs_rec_def(name: &str, field_infos: &Vec<FieldInfo>) -> String {
     for fi in field_infos {
         let field_rec: String = match get_field_flavour(&fi) {
             FieldFlavour::Vector => format!("   pub {}: Vec<html_elements_{}>,\n", &fi.field_name, &fi.field_subtype),
+            FieldFlavour::Option => format!("   pub {}: Option<std::rc::Rc<std::cell::RefCell<HtmlText>>>,\n", &fi.field_name),
             FieldFlavour::Check => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlCheck>>,\n", &fi.field_name),
             FieldFlavour::Text => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlText>>,\n", &fi.field_name),
             FieldFlavour::Button => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlButton>>,\n", &fi.field_name),
@@ -169,6 +173,7 @@ fn gen_html_inputs_rec_init(name: &str, field_infos: &Vec<FieldInfo>) -> String 
     for fi in field_infos {
         let field_rec: String = match get_field_flavour(&fi) {
             FieldFlavour::Vector => format!("   {},\n", &fi.field_name),
+            FieldFlavour::Option => format!("   {},\n", &fi.field_name),
             FieldFlavour::Check => format!("   {},\n", &fi.field_name),
             FieldFlavour::Text => format!("   {},\n", &fi.field_name),
             FieldFlavour::Button => format!("   {},\n", &fi.field_name),
@@ -287,6 +292,20 @@ fn gen_derived_macro_def(name: &str, field_infos: &Vec<FieldInfo>) -> String {
                         "field {} is dropdown, requires 'html_fill' attribute",
                         &fi.field_name
                     );
+                }
+            }
+            FieldFlavour::Option => {
+                def_acc.push_str(&format!("/* option {} */\n", &fi.field_name));
+                if is_toplevel {
+                    def_acc.push_str(&format!(
+                        "html_option_text!($gd, {}, $state, $default_state, $modified);\n",
+                        &fi.field_name
+                    ));
+                } else {
+                    def_acc.push_str(&format!(
+                    "html_nested_option_text!($gd, $field, $i, {}, $state, $default_state, $modified);\n",
+                    &fi.field_name
+                ));
                 }
             }
             _ => {
