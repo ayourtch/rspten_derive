@@ -106,9 +106,201 @@ fn get_field_attr<'a>(name: &str, v: &'a Vec<syn::Attribute>) -> Option<&'a syn:
     }
 }
 
+enum FieldFlavour {
+    Vector,
+    Check,
+    Button,
+    Select,
+    Text,
+    Hidden,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+struct FieldInfo {
+    field_name: String,
+    field_type: String,
+    field_subtype: String,
+    html_fill: String,
+    html_hook: String,
+}
+
+fn get_field_flavour(fi: &FieldInfo) -> FieldFlavour {
+    if fi.field_type == "Vec" {
+        return FieldFlavour::Vector;
+    } else if fi.field_name.starts_with("cb") {
+        return FieldFlavour::Check;
+    } else if fi.field_name.starts_with("txt") {
+        return FieldFlavour::Text;
+    } else if fi.field_name.starts_with("btn") {
+        return FieldFlavour::Button;
+    } else if fi.field_name.starts_with("dd") {
+        return FieldFlavour::Select;
+    }
+    return FieldFlavour::Hidden;
+}
+
+fn gen_html_inputs_rec_def(name: &str, field_infos: &Vec<FieldInfo>) -> String {
+    let is_toplevel = name == "PageState";
+    let mut def_acc = "".to_string();
+    let def_start = format!(
+        "\n#[derive(Default, Debug, Clone)]\npub struct html_elements_{} {{\n",
+        name
+    );
+    let def_end = format!("\n}}\n");
+    for fi in field_infos {
+        let field_rec: String = match get_field_flavour(&fi) {
+            FieldFlavour::Vector => format!("   pub {}: Vec<html_elements_{}>,\n", &fi.field_name, &fi.field_subtype),
+            FieldFlavour::Check => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlCheck>>,\n", &fi.field_name),
+            FieldFlavour::Text => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlText>>,\n", &fi.field_name),
+            FieldFlavour::Button => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlButton>>,\n", &fi.field_name),
+            FieldFlavour::Select => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlSelect<{}>>>,\n", &fi.field_name, &fi.field_type),
+            x => format!("/* unsupported {fname} */ pub {fname}: std::rc::Rc<std::cell::RefCell<HtmlText>>,\n", fname=&fi.field_name),
+        };
+        def_acc.push_str(&field_rec);
+    }
+    format!("{}\n{}\n{}", def_start, def_acc, def_end)
+}
+
+fn gen_html_inputs_rec_init(name: &str, field_infos: &Vec<FieldInfo>) -> String {
+    let is_toplevel = name == "PageState";
+    let mut def_acc = "".to_string();
+    let def_start = format!("html_elements_{} {{\n", name);
+    let def_end = format!("\n}}\n");
+    for fi in field_infos {
+        let field_rec: String = match get_field_flavour(&fi) {
+            FieldFlavour::Vector => format!("   {},\n", &fi.field_name),
+            FieldFlavour::Check => format!("   {},\n", &fi.field_name),
+            FieldFlavour::Text => format!("   {},\n", &fi.field_name),
+            FieldFlavour::Button => format!("   {},\n", &fi.field_name),
+            FieldFlavour::Select => format!("   {},\n", &fi.field_name),
+            x => format!(
+                "/* unsupported {fname} */  {fname},\n",
+                fname = &fi.field_name
+            ),
+        };
+        def_acc.push_str(&field_rec);
+    }
+    format!("{}\n{}\n{}", def_start, def_acc, def_end)
+}
+
+fn gen_derived_macro_def(name: &str, field_infos: &Vec<FieldInfo>) -> String {
+    let is_toplevel = name == "PageState";
+
+    let start_trailer = if is_toplevel {
+        "".to_string()
+    } else {
+        format!("_{}", name)
+    };
+
+    let def_start_args_top =
+        "{ ($gd: ident, $key: ident, $state: ident, $default_state: ident, $modified: ident) => { {";
+    let def_start_args_sub = "{ ($gd: ident, $field: ident, $i: expr, $state: ident, $default_state: ident, $modified: ident) => { {";
+
+    let def_start_args = if is_toplevel {
+        def_start_args_top
+    } else {
+        def_start_args_sub
+    };
+    let def_start = format!(
+        "\n\nmacro_rules! derived_html_inputs{name_trailer} {start_args}",
+        name_trailer = &start_trailer,
+        start_args = def_start_args
+    );
+    let def_end = "} }; }";
+    let mut def_acc = "".to_string();
+
+    for fi in field_infos {
+        match get_field_flavour(&fi) {
+            FieldFlavour::Vector => {
+                let vec_acc = format!("
+                    let mut html_forms: HtmlFormVector = HtmlFormVector::new(stringify!({fname}));
+                    let mut {fname}: Vec<html_elements_{sub_type}> = vec![];
+                    for i in 0..$state.{fname}.len() {{
+                        let mut gd = HtmlForm::new();
+                        {fname}.push(derived_html_inputs_{sub_type}!(gd, {fname}, i, $state, $default_state, $modified));
+
+                        html_forms.forms.push(gd);
+                    }}
+                    $gd.push(std::rc::Rc::new(std::cell::RefCell::new(html_forms)));
+                    /* {ftype} */
+                    ", fname=&fi.field_name, ftype=&fi.field_type, sub_type=&fi.field_subtype);
+                def_acc.push_str(&vec_acc);
+                def_acc.push_str(&format!(
+                    "/* X embedded {} -> {} */\n",
+                    &fi.field_name, &fi.field_type
+                ));
+            }
+            FieldFlavour::Check => {
+                if is_toplevel {
+                    def_acc.push_str(&format!(
+                        "html_check!($gd, {}, $state, $default_state, $modified);\n",
+                        &fi.field_name
+                    ));
+                } else {
+                    def_acc.push_str(&format!(
+                    "html_nested_check!($gd, $field, $i, {}, $state, $default_state, $modified);\n",
+                    &fi.field_name
+                ));
+                }
+            }
+            FieldFlavour::Text => {
+                def_acc.push_str(&format!(
+                    "html_text!($gd, {}, $state, $default_state, $modified);\n",
+                    &fi.field_name
+                ));
+            }
+            FieldFlavour::Button => {
+                if &fi.html_fill != "" {
+                    def_acc.push_str(&format!(
+                        "html_button!($gd, {}, {});\n",
+                        &fi.field_name, &fi.html_fill
+                    ));
+                } else {
+                    def_acc.push_str(&format!(
+                        "html_button!($gd, {}, {});\n",
+                        &fi.field_name, &fi.field_name
+                    ));
+                }
+            }
+            FieldFlavour::Select => {
+                if &fi.html_fill != "" {
+                    if is_toplevel {
+                        def_acc.push_str(&format!(
+                            "html_select!($gd, {}, {}, $state, $default_state, $modified);\n",
+                            &fi.field_name, &fi.html_fill
+                        ));
+                    } else {
+                        def_acc.push_str(&format!(
+                                "html_nested_select!($gd, $field, $i, {}, {}, $state, $default_state, $modified);\n",
+                                &fi.field_name, &fi.html_fill
+                            ));
+                    }
+                } else {
+                    panic!(
+                        "field {} is dropdown, requires 'html_fill' attribute",
+                        &fi.field_name
+                    );
+                }
+            }
+            _ => {
+                def_acc.push_str(&format!("/* unhandled {} */\n", &fi.field_name));
+                def_acc.push_str(&format!(
+                    "html_text!($gd, {}, $state, $default_state, $modified);\n",
+                    &fi.field_name
+                ));
+            }
+        }
+    }
+    def_acc.push_str(&gen_html_inputs_rec_init(name, field_infos));
+    format!("{}\n{}\n{}", def_start, def_acc, def_end)
+}
+
 fn impl_handlers(ast: &syn::DeriveInput) -> TokenStream {
-    let def_start = "\n\nmacro_rules! derived_html_inputs { ($gd: ident, $key: ident, $state: ident, $default_state: ident, $modified: ident) => {";
-    let def_end = "}; }";
+    let mut field_infos: Vec<FieldInfo> = vec![];
+
+    let name = &ast.ident;
+    let name_str = format!("{}", &name);
+    let is_toplevel = name == "PageState";
     let mut def_acc = "".to_string();
 
     if let syn::Data::Struct(datastruct) = &ast.data {
@@ -119,13 +311,17 @@ fn impl_handlers(ast: &syn::DeriveInput) -> TokenStream {
             out_debug.push(format!("total fields: {}", &nfields));
 
             for field in fieldsnamed.named.iter() {
-                let hook_attr = get_field_attr("html_hook", &field.attrs);
-                let hook_text = if let Some(attr) = hook_attr {
+                let html_hook = if let Some(attr) = get_field_attr("html_hook", &field.attrs) {
                     format!("{};", &attr.tts)
                 } else {
                     format!("")
                 };
-                def_acc.push_str(&hook_text);
+                // def_acc.push_str(&html_hook);
+                let html_fill = if let Some(attr) = get_field_attr("html_fill", &field.attrs) {
+                    format!("{}", &attr.tts)
+                } else {
+                    format!("")
+                };
 
                 let field_name = if let Some(ident) = &field.ident {
                     format!("{}", &ident)
@@ -133,63 +329,66 @@ fn impl_handlers(ast: &syn::DeriveInput) -> TokenStream {
                     panic!("Could not determine field name");
                 };
                 let html_field_name = format!("html_{}", &field_name);
+                let mut inner_type_name = format!("");
                 let field_type = if let syn::Type::Path(tp) = &field.ty {
                     // use quote::ToTokens;
                     if tp.path.segments.len() > 1 {
                         panic!("Only simple (path len = 1) types are supported)");
                     }
-                    let type_name = &tp.path.segments.pairs().last().unwrap().into_value().ident;
+                    if let Some(ref qself) = tp.qself {
+                        if let syn::Type::Path(ref self_type_path) = *qself.ty {
+                            let self_type_name =
+                                &tp.path.segments.pairs().last().unwrap().into_value().ident;
+                            println!("self type: {}", &self_type_name);
+                        }
+                    }
+                    let type_node = &tp.path.segments.pairs().last().unwrap().into_value();
+                    // let type_name = &tp.path.segments.pairs().last().unwrap().into_value().ident;
+                    let type_name = type_node.ident.clone();
+
+                    match &type_node.arguments {
+                        syn::PathArguments::None => {
+                            println!("no arguments for {}", &type_name);
+                        }
+                        syn::PathArguments::AngleBracketed(aba) => {
+                            println!("Angle bracketed for {}", &type_name);
+                            let arg = aba.args.first().unwrap().into_value();
+                            if let syn::GenericArgument::Type(ty) = arg {
+                                if let syn::Type::Path(itp) = &ty {
+                                    let type_node2 =
+                                        &itp.path.segments.pairs().last().unwrap().into_value();
+                                    let type_name2 = type_node2.ident.clone();
+                                    inner_type_name = format!("{}", &type_name2);
+                                    println!("second type name: {}", &type_name2);
+                                }
+                            }
+                        }
+                        syn::PathArguments::Parenthesized(para) => {
+                            println!("Parenthesized for {}", &type_name);
+                        }
+                    }
                     format!("{}", &type_name)
                 } else {
                     panic!("Only simple types (path, path len = 1) are supported");
                 };
-                if field_name.starts_with("cb") {
-                    def_acc.push_str(&format!(
-                        "html_check!($gd, {}, $state, $default_state, $modified);\n",
-                        &field_name
-                    ));
-                } else if field_name.starts_with("txt") {
-                    def_acc.push_str(&format!(
-                        "html_text!($gd, {}, $state, $default_state, $modified);\n",
-                        &field_name
-                    ));
-                } else if field_name.starts_with("btn") {
-                    let setup_attr = get_field_attr("html_fill", &field.attrs);
-                    if let Some(attr) = setup_attr {
-                        out_debug.push(format!(" fill: {}", &attr.tts));
-                        let fill_tokens = format!("{}", &attr.tts);
-                        def_acc.push_str(&format!(
-                            "html_button!($gd, {}, {});\n",
-                            &field_name, &fill_tokens
-                        ));
-                    } else {
-                        def_acc.push_str(&format!(
-                            "html_button!($gd, {}, {});\n",
-                            &field_name, &field_name
-                        ));
-                    }
-                } else if field_name.starts_with("dd") {
-                    let setup_attr = get_field_attr("html_fill", &field.attrs);
-                    if let Some(attr) = setup_attr {
-                        out_debug.push(format!(" fill: {}", &attr.tts));
-                        let fill_tokens = format!("{}", &attr.tts);
-                        def_acc.push_str(&format!(
-                            "html_select!($gd, {}, {}, $state, $default_state, $modified);\n",
-                            &field_name, &fill_tokens
-                        ));
-                    } else {
-                        panic!(
-                            "field {} is dropdown, requires 'html_fill' attribute",
-                            &field_name
-                        );
-                    }
-                }
+                let finfo = FieldInfo {
+                    field_name: field_name.clone(),
+                    field_type: field_type.clone(),
+                    field_subtype: inner_type_name.clone(),
+                    html_hook: html_hook.clone(),
+                    html_fill: html_fill.clone(),
+                };
+                field_infos.push(finfo);
 
                 out_debug.push(format!(" {} : {}", &field_name, &field_type));
             }
 
+            println!("FIELD_INFOS: {:#?}", &field_infos);
+
             println!("{:#?}", &out_debug);
-            let full_def = format!("{}\n{}\n{}", def_start, def_acc, def_end);
+            def_acc.push_str(&gen_html_inputs_rec_def(&name_str, &field_infos));
+            def_acc.push_str(&gen_derived_macro_def(&name_str, &field_infos));
+            let full_def = format!("{}", &def_acc);
             println!("full def: {}", &full_def);
             full_def.parse().unwrap()
         } else {
