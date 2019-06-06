@@ -244,10 +244,17 @@ fn gen_derived_macro_def(name: &str, field_infos: &Vec<FieldInfo>) -> String {
                 }
             }
             FieldFlavour::Text => {
-                def_acc.push_str(&format!(
-                    "html_text!($gd, {}, $state, $default_state, $modified);\n",
+                if is_toplevel {
+                    def_acc.push_str(&format!(
+                        "html_text!($gd, {}, $state, $default_state, $modified);\n",
+                        &fi.field_name
+                    ));
+                } else {
+                    def_acc.push_str(&format!(
+                    "html_nested_text!($gd, $field, $i, {}, $state, $default_state, $modified);\n",
                     &fi.field_name
                 ));
+                }
             }
             FieldFlavour::Button => {
                 if &fi.html_fill != "" {
@@ -284,10 +291,17 @@ fn gen_derived_macro_def(name: &str, field_infos: &Vec<FieldInfo>) -> String {
             }
             _ => {
                 def_acc.push_str(&format!("/* unhandled {} */\n", &fi.field_name));
-                def_acc.push_str(&format!(
-                    "html_text!($gd, {}, $state, $default_state, $modified);\n",
+                if is_toplevel {
+                    def_acc.push_str(&format!(
+                        "html_text!($gd, {}, $state, $default_state, $modified);\n",
+                        &fi.field_name
+                    ));
+                } else {
+                    def_acc.push_str(&format!(
+                    "html_nested_text!($gd, $field, $i, {}, $state, $default_state, $modified);\n",
                     &fi.field_name
                 ));
+                }
             }
         }
     }
