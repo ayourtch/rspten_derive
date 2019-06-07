@@ -125,6 +125,11 @@ struct FieldInfo {
     html_hook: String,
 }
 
+fn is_simple_type(fi: &FieldInfo) -> bool {
+    let t = &fi.field_subtype;
+    return t == "i32" || t == "bool" || t == "String";
+}
+
 fn get_field_flavour(fi: &FieldInfo) -> FieldFlavour {
     if fi.field_type == "Vec" {
         return FieldFlavour::Vector;
@@ -153,7 +158,9 @@ fn gen_html_inputs_rec_def(name: &str, field_infos: &Vec<FieldInfo>) -> String {
     for fi in field_infos {
         let field_rec: String = match get_field_flavour(&fi) {
             FieldFlavour::Vector => format!("   pub {}: Vec<html_elements_{}>,\n", &fi.field_name, &fi.field_subtype),
-            FieldFlavour::Option => format!("   pub {}: Option<std::rc::Rc<std::cell::RefCell<HtmlText>>>,\n", &fi.field_name),
+            FieldFlavour::Option => if is_simple_type(fi) { format!("   pub {}: Option<std::rc::Rc<std::cell::RefCell<HtmlText>>>,\n", &fi.field_name) } else {
+                 format!("   pub {}: Option<std::rc::Rc<std::cell::RefCell<HtmlValueContainer<{}>>>>,\n", &fi.field_name, &fi.field_subtype)
+            },
             FieldFlavour::Check => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlCheck>>,\n", &fi.field_name),
             FieldFlavour::Text => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlText>>,\n", &fi.field_name),
             FieldFlavour::Button => format!("   pub {}: std::rc::Rc<std::cell::RefCell<HtmlButton>>,\n", &fi.field_name),
@@ -296,16 +303,30 @@ fn gen_derived_macro_def(name: &str, field_infos: &Vec<FieldInfo>) -> String {
             }
             FieldFlavour::Option => {
                 def_acc.push_str(&format!("/* option {} */\n", &fi.field_name));
-                if is_toplevel {
-                    def_acc.push_str(&format!(
-                        "html_option_text!($gd, {}, $state, $default_state, $modified);\n",
+                if is_simple_type(&fi) {
+                    if is_toplevel {
+                        def_acc.push_str(&format!(
+                            "html_option_text!($gd, {}, $state, $default_state, $modified);\n",
+                            &fi.field_name
+                        ));
+                    } else {
+                        def_acc.push_str(&format!(
+                        "html_nested_option_text!($gd, $field, $i, {}, $state, $default_state, $modified);\n",
                         &fi.field_name
                     ));
+                    }
                 } else {
-                    def_acc.push_str(&format!(
-                    "html_nested_option_text!($gd, $field, $i, {}, $state, $default_state, $modified);\n",
-                    &fi.field_name
-                ));
+                    if is_toplevel {
+                        def_acc.push_str(&format!(
+                            "html_option_value_container!($gd, {}, $state, $default_state, $modified);\n",
+                            &fi.field_name
+                        ));
+                    } else {
+                        def_acc.push_str(&format!(
+                        "html_nested_option_value_container!($gd, $field, $i, {}, $state, $default_state, $modified);\n",
+                        &fi.field_name
+                    ));
+                    }
                 }
             }
             _ => {
